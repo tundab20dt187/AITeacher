@@ -242,6 +242,7 @@ export default function PresentationViewer() {
         utterance.rate = 1;
         utterance.pitch = 1;
         utterance.volume = 1;
+        utterance.lang = 'vi-VN'; // Set Vietnamese language
         
         // Speak
         window.speechSynthesis.speak(utterance);
@@ -266,27 +267,6 @@ export default function PresentationViewer() {
 
     return (
         <div style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh', margin: 0, padding: 0, zIndex: 0 }} className="relative bg-black">
-            
-            {/* HELP TOOLTIP */}
-            <div style={{
-                position: 'fixed',
-                bottom: '190px',
-                right: '10px',
-                zIndex: 9997,
-                padding: '12px',
-                backgroundColor: 'rgba(0, 0, 0, 0.9)',
-                borderRadius: '8px',
-                border: '1px solid rgb(34, 197, 94)',
-                color: 'white',
-                fontSize: '12px',
-                maxWidth: '200px',
-                lineHeight: '1.4'
-            }}>
-                <div style={{ fontWeight: 'bold', marginBottom: '6px' }}>📖 How to use:</div>
-                <div>• Use Prev/Next buttons to navigate</div>
-                <div style={{ marginTop: '4px' }}>• TTS speaks automatically</div>
-                <div style={{ marginTop: '4px' }}>• Arrow keys work when focused outside iframe</div>
-            </div>
             
             {/* CONTROL BAR AT TOP */}
             <div style={{
@@ -482,7 +462,8 @@ export default function PresentationViewer() {
                     width: '100%',
                     height: '100%',
                     border: 'none',
-                    display: 'block'
+                    display: 'block',
+                    pointerEvents: 'none' // Disable all click and keyboard interactions
                 }}
                 allowFullScreen
             />

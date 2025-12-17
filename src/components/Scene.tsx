@@ -9,12 +9,12 @@ import CameraDebugger from './CameraDebugger';  // ⬅ ADD THIS
 export default function Scene({ isSpeaking }: { isSpeaking: boolean }) {
   return (
     <div style={{ width: '100%', height: '100%' }}>
-      <Canvas camera={{ position: [0.8, 1.5, 1.2], fov: 35 }} shadows>
+      <Canvas camera={{ position: [0, 1.5, 2], fov: 12 }} shadows>
         <ambientLight intensity={0.5} />
         <spotLight position={[10, 10, 10]} />
 
         <Suspense fallback={<Fragment />}>
-          <group position={[0, 0, 0]} scale={[1, 1, 1]}>
+          <group position={[-0.0, -0.7, 0]} scale={[1, 1, 1]} rotation={[-0.5, 0, 0]}>
             <Avatar />
           </group>
         </Suspense>
