@@ -23,15 +23,14 @@ export default function PresentationViewer() {
             {/* AVATAR OVERLAY (fixed-size container) */}
             <div
                 className="
-                    absolute bottom-10 right-10
-                    w-[260px] h-[300px]
-                    rounded-xl overflow-hidden
-                    shadow-xl
+                    absolute bottom-5 right-5
+                    w-[180px] h-[220px]
+                    rounded-lg overflow-hidden
+                    shadow-lg
                     bg-white/20 backdrop-blur-md
                     border border-white/40
                     z-30
                     transition-all duration-300
-                    hover:scale-[1.03]
                     pointer-events-none
                 "
             >
