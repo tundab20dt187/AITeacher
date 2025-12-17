@@ -17,6 +17,12 @@ export default function PresentationViewer() {
     const [lastKeyPressTime, setLastKeyPressTime] = useState<number>(0);
     const [voicesLoaded, setVoicesLoaded] = useState<boolean>(false);
     const iframeRef = React.useRef<HTMLIFrameElement>(null);
+    const isPlayingRef = React.useRef<boolean>(false);
+
+    // Keep ref in sync with state
+    React.useEffect(() => {
+        isPlayingRef.current = isPlaying;
+    }, [isPlaying]);
 
     // Load voices when component mounts
     React.useEffect(() => {
@@ -168,14 +174,6 @@ export default function PresentationViewer() {
         }
     }, [currentSlide, presentationUrl, slideContents]);
 
-    React.useEffect(() => {
-        if (!isPlaying) return;
-        const interval = setInterval(() => {
-            nextSlide();
-        }, slideDuration * 1000);
-        return () => clearInterval(interval);
-    }, [isPlaying, slideDuration]);
-
     // Log slide changes when currentSlide updates
     React.useEffect(() => {
         if (currentSlide >= 0) {
@@ -184,16 +182,22 @@ export default function PresentationViewer() {
     }, [currentSlide, slideContents]);
 
     const handlePlayClick = async () => {
-        setIsPlaying(!isPlaying);
-        if (!isPlaying) {
+        const newPlayState = !isPlaying;
+        setIsPlaying(newPlayState);
+        
+        if (newPlayState) {
+            // Entering play mode - go fullscreen
             try {
                 await document.documentElement.requestFullscreen();
             } catch (err) {
                 console.log('Fullscreen not supported');
             }
         } else {
+            // Exiting play mode - exit fullscreen
             try {
-                await document.exitFullscreen();
+                if (document.fullscreenElement) {
+                    await document.exitFullscreen();
+                }
             } catch (err) {
                 console.log('Exit fullscreen failed');
             }
@@ -312,6 +316,17 @@ export default function PresentationViewer() {
         utterance.onend = () => {
             setIsSpeaking(false);
             console.log('🎤 Finished speaking');
+            console.log('🎮 isPlaying state:', isPlayingRef.current);
+            
+            // Auto-advance to next slide if playing
+            if (isPlayingRef.current) {
+                console.log('⏭️ Auto-advancing to next slide...');
+                setTimeout(() => {
+                    nextSlide();
+                }, 1000); // 1 second pause between slides
+            } else {
+                console.log('⏸️ Not auto-advancing (play mode is off)');
+            }
         };
         
         utterance.onerror = (event) => {
@@ -529,19 +544,29 @@ export default function PresentationViewer() {
             )}
 
             {/* PRESENTATION IFRAME */}
-            <iframe
-                ref={iframeRef}
-                src={presentationUrl}
-                title="Presentation"
-                style={{
-                    width: '100%',
-                    height: '100%',
-                    border: 'none',
-                    display: 'block',
-                    pointerEvents: 'none' // Disable all click and keyboard interactions
-                }}
-                allowFullScreen
-            />
+            <div style={{
+                position: 'absolute',
+                top: '60px', // Space for control bar
+                left: 0,
+                right: 0,
+                bottom: 0,
+                width: '100%',
+                height: 'calc(100vh - 60px)'
+            }}>
+                <iframe
+                    ref={iframeRef}
+                    src={presentationUrl}
+                    title="Presentation"
+                    style={{
+                        width: '100%',
+                        height: '100%',
+                        border: 'none',
+                        display: 'block',
+                        pointerEvents: 'none' // Disable all click and keyboard interactions
+                    }}
+                    allowFullScreen
+                />
+            </div>
 
             {/* AVATAR OVERLAY */}
             <div style={{
