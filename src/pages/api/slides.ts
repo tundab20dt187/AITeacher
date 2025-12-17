@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { google } from 'googleapis';
 
 type Data = {
-    slides?: Array<{ slideIndex: number; text: string; notes: string }>;
+    slides?: Array<{ slideIndex: number; slideId: string; text: string; notes: string }>;
     error?: string;
 };
 
@@ -54,7 +54,7 @@ export default async function handler(
         });
 
         // Extract text and notes from each slide
-        const slideTexts: Array<{ slideIndex: number; text: string; notes: string }> = [];
+        const slideTexts: Array<{ slideIndex: number; slideId: string; text: string; notes: string }> = [];
 
         presentation.data.slides?.forEach((slide, index) => {
             let slideText = '';
@@ -110,6 +110,7 @@ export default async function handler(
 
             slideTexts.push({
                 slideIndex: index,
+                slideId: slide.objectId || `slide_${index}`, // Get actual slide ID
                 text: slideText.trim() || `Slide ${index + 1}`,
                 notes: slideNotes.trim() || '',
             });

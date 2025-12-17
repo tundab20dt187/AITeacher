@@ -11,9 +11,10 @@ export default function PresentationViewer() {
     const [isPlaying, setIsPlaying] = useState<boolean>(false);
     const [slideDuration, setSlideDuration] = useState<number>(5);
     const [currentSlide, setCurrentSlide] = useState<number>(0);
-    const [slideContents, setSlideContents] = useState<{ [key: number]: { text: string; notes: string } }>({});
+    const [slideContents, setSlideContents] = useState<{ [key: number]: { text: string; notes: string; slideId: string } }>({});
     const [manualNotes, setManualNotes] = useState<string>('');
     const [showNotesInput, setShowNotesInput] = useState<boolean>(false);
+    const [lastKeyPressTime, setLastKeyPressTime] = useState<number>(0);
     const iframeRef = React.useRef<HTMLIFrameElement>(null);
 
     const handleLoadPresentation = async () => {
@@ -39,13 +40,14 @@ export default function PresentationViewer() {
                 url = srcMatch[1];
             }
             
-            // Convert edit link to pubembed link for display
+            // Convert edit link to embed link with minimal controls
             if (presentationId) {
-                url = `https://docs.google.com/presentation/d/${presentationId}/embed?start=false&loop=false&delayms=5000`;
+                url = `https://docs.google.com/presentation/d/${presentationId}/embed?start=false&loop=false&delayms=3000&slide=id.p0&rm=minimal`;
             }
             
             setPresentationUrl(url);
             setIsPlaying(false);
+            setCurrentSlide(0); // Reset to first slide
             
             // Fetch slide contents from API (only if we have a valid presentation ID)
             if (presentationId) {
@@ -61,11 +63,12 @@ export default function PresentationViewer() {
                     console.log('🔍 API Response:', data);
                     
                     if (data.slides) {
-                        const contentMap: { [key: number]: { text: string; notes: string } } = {};
+                        const contentMap: { [key: number]: { text: string; notes: string; slideId: string } } = {};
                         data.slides.forEach((slide: any) => {
                             contentMap[slide.slideIndex] = {
                                 text: slide.text,
-                                notes: slide.notes
+                                notes: slide.notes,
+                                slideId: slide.slideId
                             };
                         });
                         setSlideContents(contentMap);
@@ -97,44 +100,34 @@ export default function PresentationViewer() {
     };
 
     const nextSlide = () => {
-        // Focus the iframe and simulate right arrow key press
-        if (iframeRef.current) {
-            iframeRef.current.focus();
-            
-            // Create and dispatch a keyboard event
-            const event = new KeyboardEvent('keydown', {
-                key: 'ArrowRight',
-                code: 'ArrowRight',
-                keyCode: 39,
-                which: 39,
-                bubbles: true,
-                cancelable: true
-            });
-            
-            iframeRef.current.dispatchEvent(event);
-        }
         setCurrentSlide(prev => prev + 1);
     };
 
     const prevSlide = () => {
-        // Focus the iframe and simulate left arrow key press
-        if (iframeRef.current) {
-            iframeRef.current.focus();
-            
-            // Create and dispatch a keyboard event
-            const event = new KeyboardEvent('keydown', {
-                key: 'ArrowLeft',
-                code: 'ArrowLeft',
-                keyCode: 37,
-                which: 37,
-                bubbles: true,
-                cancelable: true
-            });
-            
-            iframeRef.current.dispatchEvent(event);
-        }
         setCurrentSlide(prev => Math.max(0, prev - 1));
     };
+
+    // Update iframe URL when slide changes to force navigation
+    React.useEffect(() => {
+        if (presentationUrl && currentSlide >= 0) {
+            // Extract base URL and presentation ID
+            const urlMatch = presentationUrl.match(/\/d\/([a-zA-Z0-9-_]+)/);
+            if (urlMatch) {
+                const presentationId = urlMatch[1];
+                
+                // Get the actual slide ID from slideContents
+                const slideId = slideContents[currentSlide]?.slideId || `p${currentSlide}`;
+                
+                // Construct URL with specific slide and rm=minimal to hide controls
+                const newUrl = `https://docs.google.com/presentation/d/${presentationId}/embed?start=false&loop=false&delayms=3000&slide=id.${slideId}&rm=minimal`;
+                
+                if (iframeRef.current && iframeRef.current.src !== newUrl) {
+                    iframeRef.current.src = newUrl;
+                    console.log(`📄 Loading slide ${currentSlide} (ID: ${slideId}):`, newUrl);
+                }
+            }
+        }
+    }, [currentSlide, presentationUrl, slideContents]);
 
     React.useEffect(() => {
         if (!isPlaying) return;
@@ -169,20 +162,35 @@ export default function PresentationViewer() {
     };
 
     React.useEffect(() => {
-        // Listen for keyboard events globally (including when iframe has focus)
+        // Only listen for keyboard shortcuts outside the iframe
         const handleGlobalKeyPress = (e: KeyboardEvent) => {
+            // Only respond when NOT typing in an input field
+            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+                return;
+            }
+            
+            // Only respond when NOT focused on iframe
+            if (document.activeElement === iframeRef.current) {
+                return;
+            }
+            
             if (e.key === 'ArrowRight' || e.key === ' ') {
-                setCurrentSlide(prev => prev + 1);
+                e.preventDefault();
+                nextSlide();
             } else if (e.key === 'ArrowLeft') {
-                setCurrentSlide(prev => Math.max(0, prev - 1));
+                e.preventDefault();
+                prevSlide();
             } else if (e.key === 'Home') {
+                e.preventDefault();
                 setCurrentSlide(0);
             }
         };
 
-        // Add listener at document level to catch all keyboard events
-        document.addEventListener('keydown', handleGlobalKeyPress, true);
-        return () => document.removeEventListener('keydown', handleGlobalKeyPress, true);
+        document.addEventListener('keydown', handleGlobalKeyPress);
+
+        return () => {
+            document.removeEventListener('keydown', handleGlobalKeyPress);
+        };
     }, []);
 
     React.useEffect(() => {
@@ -247,7 +255,8 @@ export default function PresentationViewer() {
                 ...prev,
                 [currentSlide]: {
                     text: prev[currentSlide]?.text || '',
-                    notes: manualNotes.trim()
+                    notes: manualNotes.trim(),
+                    slideId: prev[currentSlide]?.slideId || `p${currentSlide}`
                 }
             }));
             setManualNotes('');
@@ -257,6 +266,27 @@ export default function PresentationViewer() {
 
     return (
         <div style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh', margin: 0, padding: 0, zIndex: 0 }} className="relative bg-black">
+            
+            {/* HELP TOOLTIP */}
+            <div style={{
+                position: 'fixed',
+                bottom: '190px',
+                right: '10px',
+                zIndex: 9997,
+                padding: '12px',
+                backgroundColor: 'rgba(0, 0, 0, 0.9)',
+                borderRadius: '8px',
+                border: '1px solid rgb(34, 197, 94)',
+                color: 'white',
+                fontSize: '12px',
+                maxWidth: '200px',
+                lineHeight: '1.4'
+            }}>
+                <div style={{ fontWeight: 'bold', marginBottom: '6px' }}>📖 How to use:</div>
+                <div>• Use Prev/Next buttons to navigate</div>
+                <div style={{ marginTop: '4px' }}>• TTS speaks automatically</div>
+                <div style={{ marginTop: '4px' }}>• Arrow keys work when focused outside iframe</div>
+            </div>
             
             {/* CONTROL BAR AT TOP */}
             <div style={{
@@ -366,40 +396,28 @@ export default function PresentationViewer() {
                     Next →
                 </button>
 
-                <input
-                    type="number"
-                    min="1"
-                    max="60"
-                    value={slideDuration}
-                    onChange={(e) => setSlideDuration(parseInt(e.target.value) || 5)}
-                    style={{
-                        width: '60px',
-                        padding: '8px 12px',
-                        borderRadius: '4px',
-                        border: '1px solid rgb(34, 197, 94)',
-                        backgroundColor: 'rgba(255, 255, 255, 0.1)',
-                        color: 'white',
-                        fontSize: '14px',
-                        outline: 'none'
-                    }}
-                />
-                <span style={{ color: 'white', fontSize: '14px' }}>sec/slide</span>
-
-                <button
-                    onClick={() => setShowNotesInput(!showNotesInput)}
-                    style={{
-                        padding: '8px 16px',
-                        backgroundColor: showNotesInput ? 'rgb(34, 197, 94)' : 'rgb(107, 114, 128)',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        fontWeight: 'bold',
-                        fontSize: '14px'
-                    }}
-                >
-                    {showNotesInput ? 'Hide Notes' : 'Add Notes'}
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ color: 'white', fontSize: '14px' }}>Slide:</span>
+                    <input
+                        type="number"
+                        min="0"
+                        value={currentSlide}
+                        onChange={(e) => {
+                            const newSlide = parseInt(e.target.value) || 0;
+                            setCurrentSlide(Math.max(0, newSlide));
+                        }}
+                        style={{
+                            width: '60px',
+                            padding: '8px 12px',
+                            borderRadius: '4px',
+                            border: '1px solid rgb(34, 197, 94)',
+                            backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                            color: 'white',
+                            fontSize: '14px',
+                            outline: 'none'
+                        }}
+                    />
+                </div>
             </div>
 
             {/* MANUAL NOTES INPUT */}
