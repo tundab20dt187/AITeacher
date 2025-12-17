@@ -13,7 +13,7 @@ export default function CameraDebugger() {
 
   useFrame(() => {
     const pos = camera.position.toArray();
-    if (pos.some((v, i) => v !== last.current[i])) {
+    if (pos.some((v: number, i: number) => v !== last.current[i])) {
       console.log("📸 Camera Moved:", pos);
       last.current = pos;
     }

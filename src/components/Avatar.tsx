@@ -57,6 +57,7 @@ export default function Avatar() {
   });
 
   return (
+    // @ts-ignore
     <primitive
       object={gltf.scene}
       scale={1}
