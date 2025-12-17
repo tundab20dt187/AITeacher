@@ -118,12 +118,17 @@ export default function PresentationViewer() {
                 // Get the actual slide ID from slideContents
                 const slideId = slideContents[currentSlide]?.slideId || `p${currentSlide}`;
                 
+                console.log(`🔄 Changing to slide ${currentSlide}, slideId: ${slideId}`);
+                console.log(`📊 Available slide IDs:`, Object.keys(slideContents).map(k => `${k}: ${slideContents[parseInt(k)]?.slideId}`));
+                
                 // Construct URL with specific slide and rm=minimal to hide controls
                 const newUrl = `https://docs.google.com/presentation/d/${presentationId}/embed?start=false&loop=false&delayms=3000&slide=id.${slideId}&rm=minimal`;
                 
                 if (iframeRef.current && iframeRef.current.src !== newUrl) {
                     iframeRef.current.src = newUrl;
                     console.log(`📄 Loading slide ${currentSlide} (ID: ${slideId}):`, newUrl);
+                } else {
+                    console.log(`⏭️ Same URL, skipping reload`);
                 }
             }
         }
