@@ -10,13 +10,18 @@ export default function PresentationViewer() {
         "https://docs.google.com/presentation/d/e/2PACX-1vT3_f8yTjAK0cGw-presentation/embed?start=false&loop=false&delayms=3000";
 
     return (
-        <div style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh', margin: 0, padding: 0, zIndex: 1 }} className="relative bg-black">
+        <div style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh', margin: 0, padding: 0, zIndex: 0 }} className="relative bg-black">
 
             {/* PRESENTATION AREA - FULL SCREEN */}
             <iframe
                 src={presentationUrl}
                 title="Presentation"
-                className="w-full h-full border-0"
+                style={{
+                    width: '100%',
+                    height: '100%',
+                    border: 'none',
+                    display: 'block'
+                }}
                 allowFullScreen
             />
 
