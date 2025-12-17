@@ -15,7 +15,41 @@ export default function PresentationViewer() {
     const [manualNotes, setManualNotes] = useState<string>('');
     const [showNotesInput, setShowNotesInput] = useState<boolean>(false);
     const [lastKeyPressTime, setLastKeyPressTime] = useState<number>(0);
+    const [voicesLoaded, setVoicesLoaded] = useState<boolean>(false);
     const iframeRef = React.useRef<HTMLIFrameElement>(null);
+
+    // Load voices when component mounts
+    React.useEffect(() => {
+        const loadVoices = () => {
+            const voices = window.speechSynthesis.getVoices();
+            if (voices.length > 0) {
+                setVoicesLoaded(true);
+                console.log('🔊 Voices loaded:', voices.length);
+                console.log('📋 Available voices:', voices.map(v => `${v.name} (${v.lang})`));
+                
+                const vietnameseVoices = voices.filter(v => v.lang.startsWith('vi') || v.lang.includes('VN'));
+                if (vietnameseVoices.length > 0) {
+                    console.log('✅ Vietnamese voices found:', vietnameseVoices.map(v => v.name));
+                } else {
+                    console.warn('⚠️ No Vietnamese voices found!');
+                }
+            }
+        };
+
+        // Load voices immediately
+        loadVoices();
+
+        // Chrome loads voices asynchronously
+        if (typeof window !== 'undefined' && window.speechSynthesis) {
+            window.speechSynthesis.onvoiceschanged = loadVoices;
+        }
+
+        return () => {
+            if (typeof window !== 'undefined' && window.speechSynthesis) {
+                window.speechSynthesis.onvoiceschanged = null;
+            }
+        };
+    }, []);
 
     const handleLoadPresentation = async () => {
         if (inputUrl.trim()) {
@@ -242,12 +276,31 @@ export default function PresentationViewer() {
         // Stop any ongoing speech
         window.speechSynthesis.cancel();
         
+        // Get available voices
+        const voices = window.speechSynthesis.getVoices();
+        console.log('🔊 Available voices:', voices.map(v => `${v.name} (${v.lang})`));
+        
+        // Find a Vietnamese voice
+        const vietnameseVoice = voices.find(voice => 
+            voice.lang.startsWith('vi') || voice.lang.includes('VN')
+        );
+        
+        if (vietnameseVoice) {
+            console.log('✅ Using Vietnamese voice:', vietnameseVoice.name);
+        } else {
+            console.warn('⚠️ No Vietnamese voice found. Using default voice.');
+            console.warn('💡 Tip: Install Vietnamese language pack in Windows Settings > Time & Language > Language');
+        }
+        
         // Create speech utterance
         const utterance = new SpeechSynthesisUtterance(content);
         utterance.rate = 1;
         utterance.pitch = 1;
         utterance.volume = 1;
         utterance.lang = 'vi-VN'; // Set Vietnamese language
+        if (vietnameseVoice) {
+            utterance.voice = vietnameseVoice;
+        }
         
         // Speak
         window.speechSynthesis.speak(utterance);
