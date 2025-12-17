@@ -12,7 +12,7 @@ function noise1D(t: number) {
   return rand(i) * (1 - u) + rand(i + 1) * u;
 }
 
-export default function Avatar() {
+export default function Avatar({ isSpeaking = false }: { isSpeaking?: boolean }) {
   const gltf = useGLTF('/models/avatar.glb');
 
   const headRef = useRef<any>(null);
@@ -34,9 +34,19 @@ export default function Avatar() {
   useFrame((state) => {
     const t = state.clock.elapsedTime;
 
-    // Noise-based speaking animation → giống đang nói
-    const v = noise1D(t * 3) * 0.6 + 0.2;
-    const smile = 0.15;
+    // Only animate mouth when speaking
+    let v = 0;
+    let smile = 0;
+    
+    if (isSpeaking) {
+      // Noise-based speaking animation when TTS is active
+      v = noise1D(t * 8) * 0.5 + 0.3; // Faster, more dynamic movement
+      smile = 0.15;
+    } else {
+      // Closed mouth when not speaking
+      v = 0;
+      smile = 0.1;
+    }
 
     const applyMorph = (mesh: any) => {
       if (!mesh) return;

@@ -275,6 +275,7 @@ export default function PresentationViewer() {
         
         // Stop any ongoing speech
         window.speechSynthesis.cancel();
+        setIsSpeaking(false);
         
         // Get available voices
         const voices = window.speechSynthesis.getVoices();
@@ -301,6 +302,22 @@ export default function PresentationViewer() {
         if (vietnameseVoice) {
             utterance.voice = vietnameseVoice;
         }
+        
+        // Event handlers for speech state
+        utterance.onstart = () => {
+            setIsSpeaking(true);
+            console.log('🎤 Started speaking');
+        };
+        
+        utterance.onend = () => {
+            setIsSpeaking(false);
+            console.log('🎤 Finished speaking');
+        };
+        
+        utterance.onerror = (event) => {
+            setIsSpeaking(false);
+            console.error('🎤 Speech error:', event);
+        };
         
         // Speak
         window.speechSynthesis.speak(utterance);

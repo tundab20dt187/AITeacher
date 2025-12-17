@@ -18,7 +18,7 @@ export default function Scene({ isSpeaking }: { isSpeaking: boolean }) {
         <Suspense fallback={<Fragment />}>
           {/* @ts-ignore */}
           <group position={[-0.0, -0.7, 0]} scale={[1, 1, 1]} rotation={[-0.5, 0, 0]}>
-            <Avatar />
+            <Avatar isSpeaking={isSpeaking} />
             {/* @ts-ignore */}
           </group>
         </Suspense>
