@@ -22,17 +22,21 @@ export default function PresentationViewer() {
 
             {/* AVATAR OVERLAY (fixed-size container) */}
             <div
-                className="
-                    absolute bottom-5 right-5
-                    w-[180px] h-[220px]
-                    rounded-lg overflow-hidden
-                    shadow-lg
-                    bg-white/20 backdrop-blur-md
-                    border border-white/40
-                    z-30
-                    transition-all duration-300
-                    pointer-events-none
-                "
+                style={{
+                    position: 'fixed',
+                    bottom: 0,
+                    right: 0,
+                    width: '140px',
+                    height: '170px',
+                    borderTopLeftRadius: '8px',
+                    overflow: 'hidden',
+                    boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
+                    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                    backdropFilter: 'blur(12px)',
+                    border: '2px solid rgb(34, 197, 94)',
+                    zIndex: 30,
+                    pointerEvents: 'none'
+                }}
             >
                 <Scene isSpeaking={isSpeaking} />
             </div>
