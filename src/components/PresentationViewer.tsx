@@ -2,6 +2,63 @@
 import React, { useState } from 'react';
 import Scene from './Scene';
 
+type SpeechSegment =
+    | { type: 'speech'; text: string }
+    | { type: 'pause'; duration: number };
+
+const parseSpeechSegments = (raw: string): SpeechSegment[] => {
+    if (!raw) return [];
+
+    const segments: SpeechSegment[] = [];
+    // Try to parse JSON-based segments first
+    try {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.segments)) {
+            parsed.segments.forEach((seg: any) => {
+                if (seg?.type === 'speech' && typeof seg.text === 'string') {
+                    const trimmed = seg.text.trim();
+                    if (trimmed) {
+                        segments.push({ type: 'speech', text: trimmed });
+                    }
+                } else if (seg?.type === 'pause') {
+                    const duration = typeof seg.duration === 'number' ? seg.duration : parseFloat(seg.duration);
+                    if (!Number.isNaN(duration)) {
+                        segments.push({ type: 'pause', duration });
+                    }
+                }
+            });
+        }
+
+        if (segments.length) {
+            return segments;
+        }
+    } catch (err) {
+        // Not JSON; fall back to regex parsing
+    }
+
+    // Fallback: parse free-form text with quotes and "Pause N"
+    const pattern = /"([^"]+)"|“([^”]+)”|pause\s*(\d+\.?\d*)/gi;
+    let match: RegExpExecArray | null;
+
+    while ((match = pattern.exec(raw))) {
+        const quoted = match[1] || match[2];
+        if (quoted) {
+            const trimmed = quoted.trim();
+            if (trimmed) {
+                segments.push({ type: 'speech', text: trimmed });
+            }
+        } else if (match[3]) {
+            segments.push({ type: 'pause', duration: parseFloat(match[3]) || 0 });
+        }
+    }
+
+    if (segments.length === 0 && raw.trim()) {
+        segments.push({ type: 'speech', text: raw.trim() });
+    }
+
+    return segments;
+};
+
 export default function PresentationViewer() {
     const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
     const [presentationUrl, setPresentationUrl] = useState<string>(
@@ -17,12 +74,22 @@ export default function PresentationViewer() {
     const [lastKeyPressTime, setLastKeyPressTime] = useState<number>(0);
     const [voicesLoaded, setVoicesLoaded] = useState<boolean>(false);
     const iframeRef = React.useRef<HTMLIFrameElement>(null);
+    const pauseTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
     const isPlayingRef = React.useRef<boolean>(false);
 
     // Keep ref in sync with state
     React.useEffect(() => {
         isPlayingRef.current = isPlaying;
     }, [isPlaying]);
+
+    React.useEffect(() => {
+        return () => {
+            if (pauseTimeoutRef.current) {
+                clearTimeout(pauseTimeoutRef.current);
+            }
+            window.speechSynthesis.cancel();
+        };
+    }, []);
 
     // Load voices when component mounts
     React.useEffect(() => {
@@ -140,7 +207,24 @@ export default function PresentationViewer() {
     };
 
     const nextSlide = () => {
-        setCurrentSlide(prev => prev + 1);
+        setCurrentSlide(prev => {
+            const totalSlides = Object.keys(slideContents).length;
+            const nextSlideNum = prev + 1;
+            
+            // If we're going past the last slide
+            if (totalSlides > 0 && nextSlideNum >= totalSlides) {
+                console.log('📍 Reached end of presentation');
+                // Stop playing and exit fullscreen
+                setIsPlaying(false);
+                if (document.fullscreenElement) {
+                    document.exitFullscreen().catch(err => console.log('Exit fullscreen failed'));
+                }
+                // Reset to first slide
+                return 0;
+            }
+            
+            return nextSlideNum;
+        });
     };
 
     const prevSlide = () => {
@@ -269,75 +353,95 @@ export default function PresentationViewer() {
         console.log(`📝 Slide ${slideNumber} Notes:`, slideNotes);
         
         // Trigger TTS for the slide notes (or content if no notes)
-        speakSlideContent(slideNumber);
-    };
+        const speakSlideContent = (slideNumber: number) => {
+            // Prioritize notes over slide text
+            const slideData = slideContents && slideContents[slideNumber];
+            const content = slideData?.notes || slideData?.text || `Slide ${slideNumber + 1}`;
+            const segments = parseSpeechSegments(content);
 
-    const speakSlideContent = (slideNumber: number) => {
-        // Prioritize notes over slide text
-        const slideData = slideContents && slideContents[slideNumber];
-        const content = slideData?.notes || slideData?.text || `Slide ${slideNumber + 1}`;
-        
-        // Stop any ongoing speech
-        window.speechSynthesis.cancel();
-        setIsSpeaking(false);
-        
-        // Get available voices
-        const voices = window.speechSynthesis.getVoices();
-        console.log('🔊 Available voices:', voices.map(v => `${v.name} (${v.lang})`));
-        
-        // Find a Vietnamese voice
-        const vietnameseVoice = voices.find(voice => 
-            voice.lang.startsWith('vi') || voice.lang.includes('VN')
-        );
-        
-        if (vietnameseVoice) {
-            console.log('✅ Using Vietnamese voice:', vietnameseVoice.name);
-        } else {
-            console.warn('⚠️ No Vietnamese voice found. Using default voice.');
-            console.warn('💡 Tip: Install Vietnamese language pack in Windows Settings > Time & Language > Language');
-        }
-        
-        // Create speech utterance
-        const utterance = new SpeechSynthesisUtterance(content);
-        utterance.rate = 1;
-        utterance.pitch = 1;
-        utterance.volume = 1;
-        utterance.lang = 'vi-VN'; // Set Vietnamese language
-        if (vietnameseVoice) {
-            utterance.voice = vietnameseVoice;
-        }
-        
-        // Event handlers for speech state
-        utterance.onstart = () => {
-            setIsSpeaking(true);
-            console.log('🎤 Started speaking');
-        };
-        
-        utterance.onend = () => {
-            setIsSpeaking(false);
-            console.log('🎤 Finished speaking');
-            console.log('🎮 isPlaying state:', isPlayingRef.current);
-            
-            // Auto-advance to next slide if playing
-            if (isPlayingRef.current) {
-                console.log('⏭️ Auto-advancing to next slide...');
-                setTimeout(() => {
-                    nextSlide();
-                }, 1000); // 1 second pause between slides
-            } else {
-                console.log('⏸️ Not auto-advancing (play mode is off)');
+            if (!segments.length) {
+                console.warn('⚠️ No content to speak for this slide.');
+                return;
             }
+
+            // Stop any ongoing speech or pending pause timers
+            window.speechSynthesis.cancel();
+            if (pauseTimeoutRef.current) {
+                clearTimeout(pauseTimeoutRef.current);
+                pauseTimeoutRef.current = null;
+            }
+
+            const voices = window.speechSynthesis.getVoices();
+            console.log('🔊 Available voices:', voices.map(v => `${v.name} (${v.lang})`));
+
+            const vietnameseVoice = voices.find(voice => voice.lang.startsWith('vi') || voice.lang.includes('VN'));
+            if (vietnameseVoice) {
+                console.log('✅ Using Vietnamese voice:', vietnameseVoice.name);
+            } else {
+                console.warn('⚠️ No Vietnamese voice found. Using default voice.');
+                console.warn('💡 Tip: Install Vietnamese language pack in Windows Settings > Time & Language > Language');
+            }
+
+            let finished = false;
+            const finishSpeech = () => {
+                if (finished) return;
+                finished = true;
+                if (pauseTimeoutRef.current) {
+                    clearTimeout(pauseTimeoutRef.current);
+                    pauseTimeoutRef.current = null;
+                }
+                setIsSpeaking(false);
+                console.log('🎤 Finished speaking');
+                if (isPlayingRef.current) {
+                    console.log('⏭️ Auto-advancing to next slide...');
+                    setTimeout(() => nextSlide(), 1000);
+                }
+            };
+
+            const speakSegment = (index: number) => {
+                if (index >= segments.length) {
+                    finishSpeech();
+                    return;
+                }
+
+                const segment = segments[index];
+                if (segment.type === 'pause') {
+                    console.log(`⏸️ Pause for ${segment.duration}s`);
+                    pauseTimeoutRef.current = setTimeout(() => {
+                        pauseTimeoutRef.current = null;
+                        speakSegment(index + 1);
+                    }, (segment.duration || 0) * 1000);
+                    return;
+                }
+
+                const utterance = new SpeechSynthesisUtterance(segment.text);
+                utterance.rate = 1;
+                utterance.pitch = 1;
+                utterance.volume = 1;
+                utterance.lang = 'vi-VN';
+                if (vietnameseVoice) {
+                    utterance.voice = vietnameseVoice;
+                }
+
+                utterance.onstart = () => {
+                    setIsSpeaking(true);
+                    console.log('🎤 Started speaking segment:', segment.text);
+                };
+
+                utterance.onend = () => speakSegment(index + 1);
+                utterance.onerror = (event) => {
+                    console.error('🎤 Speech error:', event);
+                    speakSegment(index + 1);
+                };
+
+                window.speechSynthesis.speak(utterance);
+            };
+
+            speakSegment(0);
+            console.log(`📢 Speaking parsed content segments for slide ${slideNumber}`);
         };
-        
-        utterance.onerror = (event) => {
-            setIsSpeaking(false);
-            console.error('🎤 Speech error:', event);
-        };
-        
-        // Speak
-        window.speechSynthesis.speak(utterance);
-        
-        console.log(`📢 Speaking: "${content}"`);
+
+        speakSlideContent(slideNumber);
     };
 
     const saveManualNotes = () => {
