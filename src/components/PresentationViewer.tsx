@@ -71,11 +71,14 @@ export default function PresentationViewer() {
     const [slideContents, setSlideContents] = useState<{ [key: number]: { text: string; notes: string; slideId: string } }>({});
     const [manualNotes, setManualNotes] = useState<string>('');
     const [showNotesInput, setShowNotesInput] = useState<boolean>(false);
+    const [showAvatar, setShowAvatar] = useState<boolean>(true);
     const [lastKeyPressTime, setLastKeyPressTime] = useState<number>(0);
-    const [voicesLoaded, setVoicesLoaded] = useState<boolean>(false);
+    const [isLoadingTTS, setIsLoadingTTS] = useState<boolean>(false);
     const iframeRef = React.useRef<HTMLIFrameElement>(null);
     const pauseTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pollTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
     const isPlayingRef = React.useRef<boolean>(false);
+    const audioRef = React.useRef<HTMLAudioElement | null>(null);
 
     // Keep ref in sync with state
     React.useEffect(() => {
@@ -84,45 +87,73 @@ export default function PresentationViewer() {
 
     React.useEffect(() => {
         return () => {
-            if (pauseTimeoutRef.current) {
-                clearTimeout(pauseTimeoutRef.current);
-            }
-            window.speechSynthesis.cancel();
+            stopAllSpeech();
         };
     }, []);
 
-    // Load voices when component mounts
-    React.useEffect(() => {
-        const loadVoices = () => {
-            const voices = window.speechSynthesis.getVoices();
-            if (voices.length > 0) {
-                setVoicesLoaded(true);
-                console.log('🔊 Voices loaded:', voices.length);
-                console.log('📋 Available voices:', voices.map(v => `${v.name} (${v.lang})`));
-                
-                const vietnameseVoices = voices.filter(v => v.lang.startsWith('vi') || v.lang.includes('VN'));
-                if (vietnameseVoices.length > 0) {
-                    console.log('✅ Vietnamese voices found:', vietnameseVoices.map(v => v.name));
-                } else {
-                    console.warn('⚠️ No Vietnamese voices found!');
-                }
-            }
-        };
-
-        // Load voices immediately
-        loadVoices();
-
-        // Chrome loads voices asynchronously
-        if (typeof window !== 'undefined' && window.speechSynthesis) {
-            window.speechSynthesis.onvoiceschanged = loadVoices;
+    const stopAllSpeech = () => {
+        if (pauseTimeoutRef.current) {
+            clearTimeout(pauseTimeoutRef.current);
+            pauseTimeoutRef.current = null;
         }
+        if (pollTimeoutRef.current) {
+            clearTimeout(pollTimeoutRef.current);
+            pollTimeoutRef.current = null;
+        }
+        if (audioRef.current) {
+            audioRef.current.pause();
+            audioRef.current.src = '';
+            audioRef.current = null;
+        }
+        setIsSpeaking(false);
+    };
 
-        return () => {
-            if (typeof window !== 'undefined' && window.speechSynthesis) {
-                window.speechSynthesis.onvoiceschanged = null;
-            }
+    // Web Speech disabled per request; VBee direct audio only.
+
+    const handleTTS = async (text: string): Promise<string> => {
+        const payload = {
+            app_id: '3f1d18a7-7aa8-4323-8087-4c0051b6eb1e',
+            response_type: 'direct',
+            input_text: text,
+            voice_code: 'hn_male_manhdung_news_48k-fhg'
         };
-    }, []);
+
+        setIsLoadingTTS(true);
+        try {
+            const postRes = await fetch('https://vbee.vn/api/v1/tts', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3NjY0NjM0MjAsImV4cCI6MTc2OTEwMTE5OX0.qybKXUx8YGlC_uad7r5-6ZY0CSXgw614quikTayESFw'
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (!postRes.ok) {
+                const respText = await postRes.text();
+                throw new Error(`VBee TTS error ${postRes.status}: ${respText}`);
+            }
+
+            const postData = await postRes.json();
+            console.log('VBee TTS post response:', postData);
+
+            // Direct mode should return audio_link immediately.
+            const audioLink = postData?.audio_link
+                || postData?.data?.audio_link
+                || postData?.result?.audio_link
+                || postData?.url
+                || postData?.data?.url
+                || postData?.result?.url;
+
+            if (!audioLink) {
+                throw new Error(`VBee TTS missing audio_link. Response keys: ${Object.keys(postData || {}).join(',')}`);
+            }
+
+            return audioLink as string;
+        } finally {
+            setIsLoadingTTS(false);
+        }
+    };
 
     const handleLoadPresentation = async () => {
         if (inputUrl.trim()) {
@@ -353,7 +384,7 @@ export default function PresentationViewer() {
         console.log(`📝 Slide ${slideNumber} Notes:`, slideNotes);
         
         // Trigger TTS for the slide notes (or content if no notes)
-        const speakSlideContent = (slideNumber: number) => {
+        const speakSlideContent = async (slideNumber: number) => {
             // Prioritize notes over slide text
             const slideData = slideContents && slideContents[slideNumber];
             const content = slideData?.notes || slideData?.text || `Slide ${slideNumber + 1}`;
@@ -364,33 +395,14 @@ export default function PresentationViewer() {
                 return;
             }
 
-            // Stop any ongoing speech or pending pause timers
-            window.speechSynthesis.cancel();
-            if (pauseTimeoutRef.current) {
-                clearTimeout(pauseTimeoutRef.current);
-                pauseTimeoutRef.current = null;
-            }
-
-            const voices = window.speechSynthesis.getVoices();
-            console.log('🔊 Available voices:', voices.map(v => `${v.name} (${v.lang})`));
-
-            const vietnameseVoice = voices.find(voice => voice.lang.startsWith('vi') || voice.lang.includes('VN'));
-            if (vietnameseVoice) {
-                console.log('✅ Using Vietnamese voice:', vietnameseVoice.name);
-            } else {
-                console.warn('⚠️ No Vietnamese voice found. Using default voice.');
-                console.warn('💡 Tip: Install Vietnamese language pack in Windows Settings > Time & Language > Language');
-            }
+            stopAllSpeech();
 
             let finished = false;
+
             const finishSpeech = () => {
                 if (finished) return;
                 finished = true;
-                if (pauseTimeoutRef.current) {
-                    clearTimeout(pauseTimeoutRef.current);
-                    pauseTimeoutRef.current = null;
-                }
-                setIsSpeaking(false);
+                stopAllSpeech();
                 console.log('🎤 Finished speaking');
                 if (isPlayingRef.current) {
                     console.log('⏭️ Auto-advancing to next slide...');
@@ -398,46 +410,80 @@ export default function PresentationViewer() {
                 }
             };
 
-            const speakSegment = (index: number) => {
+            const playWithVbee = async (text: string) => {
+                const url = await handleTTS(text);
+                return new Promise<void>((resolve, reject) => {
+                    const audio = new Audio(url);
+                    audioRef.current = audio;
+                    setIsSpeaking(true);
+                    console.log('🎧 Playing VBee audio segment');
+
+                    audio.onended = () => {
+                        audioRef.current = null;
+                        setIsSpeaking(false);
+                        resolve();
+                    };
+                    audio.onerror = (event) => {
+                        console.error('🔁 VBee audio error:', event);
+                        audioRef.current = null;
+                        setIsSpeaking(false);
+                        reject(new Error('VBee audio playback failed'));
+                    };
+
+                    audio.play().catch(err => {
+                        console.error('🔁 VBee audio play failed:', err);
+                        audioRef.current = null;
+                        setIsSpeaking(false);
+                        reject(err);
+                    });
+                });
+            };
+
+            const runSegments = async (index: number): Promise<void> => {
                 if (index >= segments.length) {
                     finishSpeech();
                     return;
                 }
 
                 const segment = segments[index];
+
                 if (segment.type === 'pause') {
                     console.log(`⏸️ Pause for ${segment.duration}s`);
-                    pauseTimeoutRef.current = setTimeout(() => {
-                        pauseTimeoutRef.current = null;
-                        speakSegment(index + 1);
-                    }, (segment.duration || 0) * 1000);
+                    await new Promise<void>((resolve) => {
+                        pauseTimeoutRef.current = setTimeout(() => {
+                            pauseTimeoutRef.current = null;
+                            resolve();
+                        }, (segment.duration || 0) * 1000);
+                    });
+                    if (!isPlayingRef.current) {
+                        finishSpeech();
+                        return;
+                    }
+                    await runSegments(index + 1);
                     return;
                 }
 
-                const utterance = new SpeechSynthesisUtterance(segment.text);
-                utterance.rate = 1;
-                utterance.pitch = 1;
-                utterance.volume = 1;
-                utterance.lang = 'vi-VN';
-                if (vietnameseVoice) {
-                    utterance.voice = vietnameseVoice;
+                try {
+                    await playWithVbee(segment.text);
+                } catch (err) {
+                    console.error('⚠️ VBee failed and Web Speech is disabled.', err);
+                    finishSpeech();
+                    return;
                 }
 
-                utterance.onstart = () => {
-                    setIsSpeaking(true);
-                    console.log('🎤 Started speaking segment:', segment.text);
-                };
+                if (!isPlayingRef.current) {
+                    finishSpeech();
+                    return;
+                }
 
-                utterance.onend = () => speakSegment(index + 1);
-                utterance.onerror = (event) => {
-                    console.error('🎤 Speech error:', event);
-                    speakSegment(index + 1);
-                };
-
-                window.speechSynthesis.speak(utterance);
+                await runSegments(index + 1);
             };
 
-            speakSegment(0);
+            runSegments(0).catch(err => {
+                console.error('🎤 Speech pipeline error:', err);
+                finishSpeech();
+            });
+
             console.log(`📢 Speaking parsed content segments for slide ${slideNumber}`);
         };
 
@@ -528,6 +574,28 @@ export default function PresentationViewer() {
                     }}
                 >
                     {isPlaying ? 'Pause' : 'Play'}
+                </button>
+
+                {isLoadingTTS && (
+                    <span style={{ color: 'rgb(34, 197, 94)', fontSize: '13px', fontWeight: 'bold' }}>
+                        Đang tạo TTS...
+                    </span>
+                )}
+
+                <button
+                    onClick={() => setShowAvatar(prev => !prev)}
+                    style={{
+                        padding: '8px 16px',
+                        backgroundColor: showAvatar ? 'rgb(34, 197, 94)' : 'rgb(107, 114, 128)',
+                        color: showAvatar ? 'black' : 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontWeight: 'bold',
+                        fontSize: '14px'
+                    }}
+                >
+                    {showAvatar ? 'Hide Avatar' : 'Show Avatar'}
                 </button>
 
                 <button
@@ -673,23 +741,25 @@ export default function PresentationViewer() {
             </div>
 
             {/* AVATAR OVERLAY */}
-            <div style={{
-                position: 'fixed',
-                bottom: 0,
-                right: 0,
-                width: '140px',
-                height: '170px',
-                borderTopLeftRadius: '8px',
-                overflow: 'hidden',
-                boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
-                backgroundColor: 'rgba(255, 255, 255, 0.2)',
-                backdropFilter: 'blur(12px)',
-                border: '2px solid rgb(34, 197, 94)',
-                zIndex: 30,
-                pointerEvents: 'none'
-            }}>
-                <Scene isSpeaking={isSpeaking} />
-            </div>
+            {showAvatar && (
+                <div style={{
+                    position: 'fixed',
+                    bottom: 0,
+                    right: 0,
+                    width: '140px',
+                    height: '170px',
+                    borderTopLeftRadius: '8px',
+                    overflow: 'hidden',
+                    boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
+                    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                    backdropFilter: 'blur(12px)',
+                    border: '2px solid rgb(34, 197, 94)',
+                    zIndex: 30,
+                    pointerEvents: 'none'
+                }}>
+                    <Scene isSpeaking={isSpeaking} />
+                </div>
+            )}
         </div>
     );
 }
