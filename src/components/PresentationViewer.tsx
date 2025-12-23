@@ -124,7 +124,7 @@ export default function PresentationViewer() {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3NjY0NjM0MjAsImV4cCI6MTc2OTEwMTE5OX0.qybKXUx8YGlC_uad7r5-6ZY0CSXgw614quikTayESFw'
+                    Authorization: `Bearer ${process.env.NEXT_PUBLIC_VBEE_TOKEN}`
                 },
                 body: JSON.stringify(payload)
             });
