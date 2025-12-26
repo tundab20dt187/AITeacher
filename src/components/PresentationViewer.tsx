@@ -14,14 +14,15 @@ export default function PresentationViewer() {
     const [manualNotes, setManualNotes] = useState<string>('');
     const [showNotesInput, setShowNotesInput] = useState<boolean>(false);
     const [showAvatar, setShowAvatar] = useState<boolean>(false);
-    const [isLoadingTTS, setIsLoadingTTS] = useState<boolean>(false);
+    const [ttsInFlight, setTtsInFlight] = useState<number>(0);
     const [currentLine, setCurrentLine] = useState<number>(0);
     const [lastAudioUrl, setLastAudioUrl] = useState<string | null>(null);
+    const [audioCache, setAudioCache] = useState<{ [key: number]: { [key: number]: { url: string; fetchedAt: number; text: string } } }>({});
     const iframeRef = React.useRef<HTMLIFrameElement>(null);
     const pauseTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
     const audioRef = React.useRef<HTMLAudioElement | null>(null);
 
-    const controlsDisabled = isPlaying || isLoadingTTS;
+    const controlsDisabled = isPlaying || ttsInFlight > 0;
 
     React.useEffect(() => {
         return () => {
@@ -67,7 +68,7 @@ export default function PresentationViewer() {
             voice_code: 'hn_male_manhdung_news_48k-fhg'
         };
 
-        setIsLoadingTTS(true);
+        setTtsInFlight((c) => c + 1);
         try {
             const postRes = await fetch('https://vbee.vn/api/v1/tts', {
                 method: 'POST',
@@ -100,7 +101,7 @@ export default function PresentationViewer() {
 
             return audioLink as string;
         } finally {
-            setIsLoadingTTS(false);
+            setTtsInFlight((c) => Math.max(0, c - 1));
         }
     };
 
@@ -130,6 +131,51 @@ export default function PresentationViewer() {
                 reject(err);
             });
         });
+    };
+
+    const isCacheValid = (slideIndex: number, lineIndex: number, text: string, cache: { [key: number]: { [key: number]: { url: string; fetchedAt: number; text: string } } }) => {
+        const entry = cache[slideIndex]?.[lineIndex];
+        if (!entry) return false;
+        const fresh = Date.now() - entry.fetchedAt < 180000; // 3 minutes
+        return fresh && entry.text === text && !!entry.url;
+    };
+
+    const ensureAudioForLine = async (
+        slideIndex: number,
+        lineIndex: number,
+        text: string,
+        mapOverride?: { [key: number]: { text: string; notes: string; slideId: string } }
+    ): Promise<string> => {
+        const lines = getLinesForSlide(slideIndex, mapOverride);
+        const effectiveText = lines[lineIndex] ?? text;
+
+        if (!effectiveText) {
+            throw new Error('No text available for TTS.');
+        }
+
+        if (isCacheValid(slideIndex, lineIndex, effectiveText, audioCache)) {
+            return audioCache[slideIndex][lineIndex].url;
+        }
+
+        const url = await handleTTS(effectiveText);
+        const entry = { url, fetchedAt: Date.now(), text: effectiveText };
+
+        setAudioCache(prev => ({
+            ...prev,
+            [slideIndex]: {
+                ...(prev[slideIndex] || {}),
+                [lineIndex]: entry
+            }
+        }));
+        setLastAudioUrl(url);
+
+        return url;
+    };
+
+    const prefetchSlideAudio = async (slideIndex: number, mapOverride: { [key: number]: { text: string; notes: string; slideId: string } }) => {
+        const lines = getLinesForSlide(slideIndex, mapOverride);
+        if (!lines.length) return;
+        await Promise.all(lines.map((lineText, idx) => ensureAudioForLine(slideIndex, idx, lineText, mapOverride)));
     };
 
     const handleLoadPresentation = async () => {
@@ -190,11 +236,24 @@ export default function PresentationViewer() {
                 setSlideContents(contentMap);
                 console.log('✅ Slide contents loaded:', contentMap);
 
-                const firstLines = getLinesForSlide(0, contentMap);
-                if (firstLines.length) {
-                    await playLineAt(0, 0, contentMap);
-                } else {
-                    console.warn('⚠️ No lines to play on first slide after load.');
+                // Prefetch current slide lines, then play first line
+                const slideIndices = Object.keys(contentMap).map(n => parseInt(n, 10)).sort((a, b) => a - b);
+                if (slideIndices.length) {
+                    await prefetchSlideAudio(0, contentMap);
+                    const firstLines = getLinesForSlide(0, contentMap);
+                    if (firstLines.length) {
+                        void (async () => {
+                            await playLineAt(0, 0, contentMap);
+                        })();
+                    } else {
+                        console.warn('⚠️ No lines to play on first slide after load.');
+                    }
+
+                    // Background prefetch for next slide (non-blocking)
+                    const nextSlide = slideIndices.find(i => i > 0);
+                    if (nextSlide !== undefined) {
+                        void prefetchSlideAudio(nextSlide, contentMap).catch(err => console.warn('⚠️ Prefetch next slide failed', err));
+                    }
                 }
             } else if (data.error) {
                 console.error('❌ API Error:', data.error);
@@ -218,7 +277,7 @@ export default function PresentationViewer() {
     };
 
     const moveAndPlay = async (delta: number) => {
-        if (isPlaying || isLoadingTTS) return;
+        if (isPlaying || ttsInFlight > 0) return;
         const slidesCount = Object.keys(slideContents).length;
         const resolveLines = (slideIndex: number) => {
             const lines = getLinesForSlide(slideIndex);
@@ -251,6 +310,13 @@ export default function PresentationViewer() {
         setIsPlaying(false);
         setCurrentSlide(targetSlide);
         setCurrentLine(targetLine);
+
+        // Kick off prefetch for the slide after targetSlide immediately (non-blocking)
+        const slideIndices = Object.keys(slideContents).map(n => parseInt(n, 10)).sort((a, b) => a - b);
+        const nextSlide = slideIndices.find(i => i > targetSlide);
+        if (nextSlide !== undefined) {
+            void prefetchSlideAudio(nextSlide, slideContents).catch(err => console.warn('⚠️ Prefetch next slide failed', err));
+        }
 
         await playLineAt(targetSlide, targetLine);
     };
@@ -308,7 +374,7 @@ export default function PresentationViewer() {
         setIsPlaying(true);
 
         try {
-            const url = await handleTTS(lineText);
+            const url = await ensureAudioForLine(slideIndex, clampedIndex, lineText, mapOverride);
             setLastAudioUrl(url);
             await playAudioUrl(url);
         } catch (err) {
@@ -320,7 +386,7 @@ export default function PresentationViewer() {
     };
 
     const handlePlayClick = async () => {
-        if (isPlaying || isLoadingTTS) return;
+        if (isPlaying || ttsInFlight > 0) return;
         if (!lastAudioUrl) {
             console.warn('⚠️ No cached audio to replay.');
             return;
@@ -517,7 +583,7 @@ export default function PresentationViewer() {
                     Replay
                 </button>
 
-                {isLoadingTTS && (
+                {ttsInFlight > 0 && (
                     <span style={{ color: 'rgb(34, 197, 94)', fontSize: '13px', fontWeight: 'bold' }}>
                         Đang tạo TTS...
                     </span>
