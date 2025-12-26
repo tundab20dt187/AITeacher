@@ -2,88 +2,26 @@
 import React, { useState } from 'react';
 import Scene from './Scene';
 
-type SpeechSegment =
-    | { type: 'speech'; text: string }
-    | { type: 'pause'; duration: number };
-
-const parseSpeechSegments = (raw: string): SpeechSegment[] => {
-    if (!raw) return [];
-
-    const segments: SpeechSegment[] = [];
-    // Try to parse JSON-based segments first
-    try {
-        const parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed.segments)) {
-            parsed.segments.forEach((seg: any) => {
-                if (seg?.type === 'speech' && typeof seg.text === 'string') {
-                    const trimmed = seg.text.trim();
-                    if (trimmed) {
-                        segments.push({ type: 'speech', text: trimmed });
-                    }
-                } else if (seg?.type === 'pause') {
-                    const duration = typeof seg.duration === 'number' ? seg.duration : parseFloat(seg.duration);
-                    if (!Number.isNaN(duration)) {
-                        segments.push({ type: 'pause', duration });
-                    }
-                }
-            });
-        }
-
-        if (segments.length) {
-            return segments;
-        }
-    } catch (err) {
-        // Not JSON; fall back to regex parsing
-    }
-
-    // Fallback: parse free-form text with quotes and "Pause N"
-    const pattern = /"([^"]+)"|“([^”]+)”|pause\s*(\d+\.?\d*)/gi;
-    let match: RegExpExecArray | null;
-
-    while ((match = pattern.exec(raw))) {
-        const quoted = match[1] || match[2];
-        if (quoted) {
-            const trimmed = quoted.trim();
-            if (trimmed) {
-                segments.push({ type: 'speech', text: trimmed });
-            }
-        } else if (match[3]) {
-            segments.push({ type: 'pause', duration: parseFloat(match[3]) || 0 });
-        }
-    }
-
-    if (segments.length === 0 && raw.trim()) {
-        segments.push({ type: 'speech', text: raw.trim() });
-    }
-
-    return segments;
-};
-
 export default function PresentationViewer() {
     const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
     const [presentationUrl, setPresentationUrl] = useState<string>(
-        "https://docs.google.com/presentation/d/1I-URCin_CKiU37HOe_JkBX9pW5s39lIbRyF4Fn7Kc-E/edit?slide=id.p1#slide=id.p1"
+        ""
     );
     const [inputUrl, setInputUrl] = useState<string>(presentationUrl);
     const [isPlaying, setIsPlaying] = useState<boolean>(false);
-    const [slideDuration, setSlideDuration] = useState<number>(5);
     const [currentSlide, setCurrentSlide] = useState<number>(0);
     const [slideContents, setSlideContents] = useState<{ [key: number]: { text: string; notes: string; slideId: string } }>({});
     const [manualNotes, setManualNotes] = useState<string>('');
     const [showNotesInput, setShowNotesInput] = useState<boolean>(false);
-    const [showAvatar, setShowAvatar] = useState<boolean>(true);
-    const [lastKeyPressTime, setLastKeyPressTime] = useState<number>(0);
+    const [showAvatar, setShowAvatar] = useState<boolean>(false);
     const [isLoadingTTS, setIsLoadingTTS] = useState<boolean>(false);
+    const [currentLine, setCurrentLine] = useState<number>(0);
+    const [lastAudioUrl, setLastAudioUrl] = useState<string | null>(null);
     const iframeRef = React.useRef<HTMLIFrameElement>(null);
     const pauseTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-    const pollTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-    const isPlayingRef = React.useRef<boolean>(false);
     const audioRef = React.useRef<HTMLAudioElement | null>(null);
 
-    // Keep ref in sync with state
-    React.useEffect(() => {
-        isPlayingRef.current = isPlaying;
-    }, [isPlaying]);
+    const controlsDisabled = isPlaying || isLoadingTTS;
 
     React.useEffect(() => {
         return () => {
@@ -96,19 +34,30 @@ export default function PresentationViewer() {
             clearTimeout(pauseTimeoutRef.current);
             pauseTimeoutRef.current = null;
         }
-        if (pollTimeoutRef.current) {
-            clearTimeout(pollTimeoutRef.current);
-            pollTimeoutRef.current = null;
-        }
         if (audioRef.current) {
             audioRef.current.pause();
             audioRef.current.src = '';
             audioRef.current = null;
         }
         setIsSpeaking(false);
+        setIsPlaying(false);
     };
 
     // Web Speech disabled per request; VBee direct audio only.
+
+    const getLinesForSlide = (slideNumber: number, mapOverride?: { [key: number]: { text: string; notes: string; slideId: string } }): string[] => {
+        const sourceMap = mapOverride ?? slideContents;
+        const slideData = sourceMap[slideNumber];
+        const raw = slideData?.notes ?? slideData?.text ?? `Slide ${slideNumber + 1}`;
+        const normalized = raw
+            .replace(/<br\s*\/?\s*>/gi, '\n') // HTML breaks
+            .replace(/\x0B/g, '\n'); // vertical tab separators
+
+        return normalized
+            .split(/\r?\n/)
+            .map(line => line.trim())
+            .filter(Boolean);
+    };
 
     const handleTTS = async (text: string): Promise<string> => {
         const payload = {
@@ -155,79 +104,110 @@ export default function PresentationViewer() {
         }
     };
 
+    const playAudioUrl = (url: string) => {
+        return new Promise<void>((resolve, reject) => {
+            const audio = new Audio(url);
+            audioRef.current = audio;
+            setIsSpeaking(true);
+            console.log('🎧 Playing audio segment');
+
+            audio.onended = () => {
+                audioRef.current = null;
+                setIsSpeaking(false);
+                resolve();
+            };
+            audio.onerror = (event) => {
+                console.error('🔁 Audio error:', event);
+                audioRef.current = null;
+                setIsSpeaking(false);
+                reject(new Error('Audio playback failed'));
+            };
+
+            audio.play().catch(err => {
+                console.error('🔁 Audio play failed:', err);
+                audioRef.current = null;
+                setIsSpeaking(false);
+                reject(err);
+            });
+        });
+    };
+
     const handleLoadPresentation = async () => {
-        if (inputUrl.trim()) {
-            let url = inputUrl.trim();
-            
-            // Extract presentation ID from URL
-            // For edit URLs: /d/{id}/edit or /d/{id}/edit?slide=...
-            let presentationId = null;
-            
-            // Try to extract from /d/ format (any variant)
-            const dMatch = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
-            if (dMatch && dMatch[1] !== 'e') {
-                presentationId = dMatch[1];
-            }
-            
-            console.log('📌 Extracted presentation ID:', presentationId);
-            console.log('📌 Original URL:', url);
-            
-            // Extract src from iframe code if pasted
-            const srcMatch = url.match(/src="([^"]+)"/);
-            if (srcMatch) {
-                url = srcMatch[1];
-            }
-            
-            // Convert edit link to embed link with minimal controls
-            if (presentationId) {
-                url = `https://docs.google.com/presentation/d/${presentationId}/embed?start=false&loop=false&delayms=3000&slide=id.p0&rm=minimal`;
-            }
-            
-            setPresentationUrl(url);
-            setIsPlaying(false);
-            setCurrentSlide(0); // Reset to first slide
-            
-            // Fetch slide contents from API (only if we have a valid presentation ID)
-            if (presentationId) {
-                console.log('📤 Sending to API:', { presentationId });
-                try {
-                    const response = await fetch('/api/slides', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ presentationId }),
-                    });
-                    
-                    const data = await response.json();
-                    console.log('🔍 API Response:', data);
-                    
-                    if (data.slides) {
-                        const contentMap: { [key: number]: { text: string; notes: string; slideId: string } } = {};
-                        data.slides.forEach((slide: any) => {
-                            contentMap[slide.slideIndex] = {
-                                text: slide.text,
-                                notes: slide.notes,
-                                slideId: slide.slideId
-                            };
-                        });
-                        setSlideContents(contentMap);
-                        console.log('✅ Slide contents loaded:', contentMap);
-                    } else if (data.error) {
-                        console.error('❌ API Error:', data.error);
-                        if (data.error.includes('not supported')) {
-                            console.warn('⚠️ This presentation format is not supported by Google Slides API.');
-                            console.warn('💡 Use the "Add Notes" button to manually enter speaker notes for each slide.');
-                            setShowNotesInput(true);
-                        } else {
-                            console.error('💡 Tip: Make sure to share your presentation with:', 'aiteacher-slides@ultra-light-480107-r9.iam.gserviceaccount.com');
-                        }
-                    }
-                } catch (error) {
-                    console.error('❌ Error fetching slides:', error);
+        if (controlsDisabled) return;
+        if (!inputUrl.trim()) return;
+
+        let url = inputUrl.trim();
+        let presentationId: string | null = null;
+
+        const dMatch = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
+        if (dMatch && dMatch[1] !== 'e') {
+            presentationId = dMatch[1];
+        }
+
+        console.log('📌 Extracted presentation ID:', presentationId);
+        console.log('📌 Original URL:', url);
+
+        const srcMatch = url.match(/src="([^"]+)"/);
+        if (srcMatch) {
+            url = srcMatch[1];
+        }
+
+        if (presentationId) {
+            url = `https://docs.google.com/presentation/d/${presentationId}/embed?start=false&loop=false&delayms=3000&slide=id.p0&rm=minimal`;
+        }
+
+        setPresentationUrl(url);
+        setIsPlaying(false);
+        setCurrentSlide(0);
+        setCurrentLine(0);
+
+        if (!presentationId) {
+            console.error('❌ Could not extract presentation ID from URL');
+            console.error('💡 Please paste a valid Google Slides URL');
+            return;
+        }
+
+        console.log('📤 Sending to API:', { presentationId });
+        try {
+            const response = await fetch('/api/slides', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ presentationId }),
+            });
+
+            const data = await response.json();
+            console.log('🔍 API Response:', data);
+
+            if (data.slides) {
+                const contentMap: { [key: number]: { text: string; notes: string; slideId: string } } = {};
+                data.slides.forEach((slide: any) => {
+                    contentMap[slide.slideIndex] = {
+                        text: slide.text,
+                        notes: slide.notes,
+                        slideId: slide.slideId
+                    };
+                });
+                setSlideContents(contentMap);
+                console.log('✅ Slide contents loaded:', contentMap);
+
+                const firstLines = getLinesForSlide(0, contentMap);
+                if (firstLines.length) {
+                    await playLineAt(0, 0, contentMap);
+                } else {
+                    console.warn('⚠️ No lines to play on first slide after load.');
                 }
-            } else {
-                console.error('❌ Could not extract presentation ID from URL');
-                console.error('💡 Please paste a valid Google Slides URL');
+            } else if (data.error) {
+                console.error('❌ API Error:', data.error);
+                if (data.error.includes('not supported')) {
+                    console.warn('⚠️ This presentation format is not supported by Google Slides API.');
+                    console.warn('💡 Use the "Add Notes" button to manually enter speaker notes for each slide.');
+                    setShowNotesInput(true);
+                } else {
+                    console.error('💡 Tip: Make sure to share your presentation with:', 'aiteacher-slides@ultra-light-480107-r9.iam.gserviceaccount.com');
+                }
             }
+        } catch (error) {
+            console.error('❌ Error fetching slides:', error);
         }
     };
 
@@ -237,29 +217,42 @@ export default function PresentationViewer() {
         }
     };
 
-    const nextSlide = () => {
-        setCurrentSlide(prev => {
-            const totalSlides = Object.keys(slideContents).length;
-            const nextSlideNum = prev + 1;
-            
-            // If we're going past the last slide
-            if (totalSlides > 0 && nextSlideNum >= totalSlides) {
-                console.log('📍 Reached end of presentation');
-                // Stop playing and exit fullscreen
-                setIsPlaying(false);
-                if (document.fullscreenElement) {
-                    document.exitFullscreen().catch(err => console.log('Exit fullscreen failed'));
-                }
-                // Reset to first slide
-                return 0;
-            }
-            
-            return nextSlideNum;
-        });
-    };
+    const moveAndPlay = async (delta: number) => {
+        if (isPlaying || isLoadingTTS) return;
+        const slidesCount = Object.keys(slideContents).length;
+        const resolveLines = (slideIndex: number) => {
+            const lines = getLinesForSlide(slideIndex);
+            return lines.length ? lines : [`Slide ${slideIndex + 1}`];
+        };
 
-    const prevSlide = () => {
-        setCurrentSlide(prev => Math.max(0, prev - 1));
+        let targetSlide = currentSlide;
+        let lines = resolveLines(targetSlide);
+        let targetLine = currentLine + delta;
+
+        if (targetLine >= lines.length) {
+            if (targetSlide + 1 < slidesCount) {
+                targetSlide += 1;
+                lines = resolveLines(targetSlide);
+                targetLine = 0;
+            } else {
+                targetLine = lines.length - 1;
+            }
+        } else if (targetLine < 0) {
+            if (targetSlide > 0) {
+                targetSlide -= 1;
+                lines = resolveLines(targetSlide);
+                targetLine = Math.max(lines.length - 1, 0);
+            } else {
+                targetLine = 0;
+            }
+        }
+
+        stopAllSpeech();
+        setIsPlaying(false);
+        setCurrentSlide(targetSlide);
+        setCurrentLine(targetLine);
+
+        await playLineAt(targetSlide, targetLine);
     };
 
     // Update iframe URL when slide changes to force navigation
@@ -296,26 +289,51 @@ export default function PresentationViewer() {
         }
     }, [currentSlide, slideContents]);
 
+    const playLineAt = async (slideIndex: number, lineIndex: number, mapOverride?: { [key: number]: { text: string; notes: string; slideId: string } }) => {
+        const lines = getLinesForSlide(slideIndex, mapOverride);
+        if (!lines.length) {
+            console.warn('⚠️ No content to speak for this slide.');
+            return;
+        }
+
+        const clampedIndex = Math.min(lineIndex, lines.length - 1);
+        if (clampedIndex !== lineIndex) {
+            setCurrentLine(clampedIndex);
+        }
+
+        const lineText = lines[clampedIndex];
+        console.log(`▶️ Playing line ${clampedIndex + 1}/${lines.length} (slide ${slideIndex}):`, lineText);
+
+        stopAllSpeech();
+        setIsPlaying(true);
+
+        try {
+            const url = await handleTTS(lineText);
+            setLastAudioUrl(url);
+            await playAudioUrl(url);
+        } catch (err) {
+            console.error('⚠️ VBee failed while playing line.', err);
+        } finally {
+            setIsSpeaking(false);
+            setIsPlaying(false);
+        }
+    };
+
     const handlePlayClick = async () => {
-        const newPlayState = !isPlaying;
-        setIsPlaying(newPlayState);
-        
-        if (newPlayState) {
-            // Entering play mode - go fullscreen
-            try {
-                await document.documentElement.requestFullscreen();
-            } catch (err) {
-                console.log('Fullscreen not supported');
-            }
-        } else {
-            // Exiting play mode - exit fullscreen
-            try {
-                if (document.fullscreenElement) {
-                    await document.exitFullscreen();
-                }
-            } catch (err) {
-                console.log('Exit fullscreen failed');
-            }
+        if (isPlaying || isLoadingTTS) return;
+        if (!lastAudioUrl) {
+            console.warn('⚠️ No cached audio to replay.');
+            return;
+        }
+        stopAllSpeech();
+        setIsPlaying(true);
+        try {
+            await playAudioUrl(lastAudioUrl);
+        } catch (err) {
+            console.error('⚠️ Failed to replay cached audio.', err);
+        } finally {
+            setIsSpeaking(false);
+            setIsPlaying(false);
         }
     };
 
@@ -334,13 +352,14 @@ export default function PresentationViewer() {
             
             if (e.key === 'ArrowRight' || e.key === ' ') {
                 e.preventDefault();
-                nextSlide();
+                moveAndPlay(1);
             } else if (e.key === 'ArrowLeft') {
                 e.preventDefault();
-                prevSlide();
+                moveAndPlay(-1);
             } else if (e.key === 'Home') {
                 e.preventDefault();
                 setCurrentSlide(0);
+                setCurrentLine(0);
             }
         };
 
@@ -357,10 +376,10 @@ export default function PresentationViewer() {
         const handleKeyPress = (e: KeyboardEvent) => {
             if (e.key === 'ArrowRight' || e.key === ' ') {
                 e.preventDefault();
-                nextSlide();
+                moveAndPlay(1);
             } else if (e.key === 'ArrowLeft') {
                 e.preventDefault();
-                prevSlide();
+                moveAndPlay(-1);
             } else if (e.key === 'Escape') {
                 setIsPlaying(false);
             }
@@ -382,112 +401,12 @@ export default function PresentationViewer() {
         
         console.log(`📄 Slide ${slideNumber} Content:`, slideText);
         console.log(`📝 Slide ${slideNumber} Notes:`, slideNotes);
-        
-        // Trigger TTS for the slide notes (or content if no notes)
-        const speakSlideContent = async (slideNumber: number) => {
-            // Prioritize notes over slide text
-            const slideData = slideContents && slideContents[slideNumber];
-            const content = slideData?.notes || slideData?.text || `Slide ${slideNumber + 1}`;
-            const segments = parseSpeechSegments(content);
-
-            if (!segments.length) {
-                console.warn('⚠️ No content to speak for this slide.');
-                return;
-            }
-
-            stopAllSpeech();
-
-            let finished = false;
-
-            const finishSpeech = () => {
-                if (finished) return;
-                finished = true;
-                stopAllSpeech();
-                console.log('🎤 Finished speaking');
-                if (isPlayingRef.current) {
-                    console.log('⏭️ Auto-advancing to next slide...');
-                    setTimeout(() => nextSlide(), 1000);
-                }
-            };
-
-            const playWithVbee = async (text: string) => {
-                const url = await handleTTS(text);
-                return new Promise<void>((resolve, reject) => {
-                    const audio = new Audio(url);
-                    audioRef.current = audio;
-                    setIsSpeaking(true);
-                    console.log('🎧 Playing VBee audio segment');
-
-                    audio.onended = () => {
-                        audioRef.current = null;
-                        setIsSpeaking(false);
-                        resolve();
-                    };
-                    audio.onerror = (event) => {
-                        console.error('🔁 VBee audio error:', event);
-                        audioRef.current = null;
-                        setIsSpeaking(false);
-                        reject(new Error('VBee audio playback failed'));
-                    };
-
-                    audio.play().catch(err => {
-                        console.error('🔁 VBee audio play failed:', err);
-                        audioRef.current = null;
-                        setIsSpeaking(false);
-                        reject(err);
-                    });
-                });
-            };
-
-            const runSegments = async (index: number): Promise<void> => {
-                if (index >= segments.length) {
-                    finishSpeech();
-                    return;
-                }
-
-                const segment = segments[index];
-
-                if (segment.type === 'pause') {
-                    console.log(`⏸️ Pause for ${segment.duration}s`);
-                    await new Promise<void>((resolve) => {
-                        pauseTimeoutRef.current = setTimeout(() => {
-                            pauseTimeoutRef.current = null;
-                            resolve();
-                        }, (segment.duration || 0) * 1000);
-                    });
-                    if (!isPlayingRef.current) {
-                        finishSpeech();
-                        return;
-                    }
-                    await runSegments(index + 1);
-                    return;
-                }
-
-                try {
-                    await playWithVbee(segment.text);
-                } catch (err) {
-                    console.error('⚠️ VBee failed and Web Speech is disabled.', err);
-                    finishSpeech();
-                    return;
-                }
-
-                if (!isPlayingRef.current) {
-                    finishSpeech();
-                    return;
-                }
-
-                await runSegments(index + 1);
-            };
-
-            runSegments(0).catch(err => {
-                console.error('🎤 Speech pipeline error:', err);
-                finishSpeech();
-            });
-
-            console.log(`📢 Speaking parsed content segments for slide ${slideNumber}`);
-        };
-
-        speakSlideContent(slideNumber);
+        const lines = getLinesForSlide(slideNumber);
+        if (!lines.length) {
+            console.warn('⚠️ No lines available for this slide.');
+        } else if (currentLine >= lines.length) {
+            setCurrentLine(0);
+        }
     };
 
     const saveManualNotes = () => {
@@ -546,13 +465,15 @@ export default function PresentationViewer() {
                 
                 <button
                     onClick={handleLoadPresentation}
+                    disabled={controlsDisabled}
                     style={{
                         padding: '8px 16px',
-                        backgroundColor: 'rgb(34, 197, 94)',
-                        color: 'black',
+                        backgroundColor: controlsDisabled ? 'rgb(107, 114, 128)' : 'rgba(197, 189, 34, 1)',
+                        color: controlsDisabled ? 'white' : 'black',
                         border: 'none',
                         borderRadius: '4px',
-                        cursor: 'pointer',
+                        cursor: controlsDisabled ? 'not-allowed' : 'pointer',
+                        opacity: controlsDisabled ? 0.7 : 1,
                         fontWeight: 'bold',
                         fontSize: '14px'
                     }}
@@ -561,36 +482,16 @@ export default function PresentationViewer() {
                 </button>
 
                 <button
-                    onClick={handlePlayClick}
-                    style={{
-                        padding: '8px 16px',
-                        backgroundColor: isPlaying ? 'rgb(239, 68, 68)' : 'rgb(59, 130, 246)',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        fontWeight: 'bold',
-                        fontSize: '14px'
-                    }}
-                >
-                    {isPlaying ? 'Pause' : 'Play'}
-                </button>
-
-                {isLoadingTTS && (
-                    <span style={{ color: 'rgb(34, 197, 94)', fontSize: '13px', fontWeight: 'bold' }}>
-                        Đang tạo TTS...
-                    </span>
-                )}
-
-                <button
                     onClick={() => setShowAvatar(prev => !prev)}
+                    disabled={controlsDisabled}
                     style={{
                         padding: '8px 16px',
-                        backgroundColor: showAvatar ? 'rgb(34, 197, 94)' : 'rgb(107, 114, 128)',
+                        backgroundColor: showAvatar ? 'rgba(175, 34, 197, 1)' : 'rgb(107, 114, 128)',
                         color: showAvatar ? 'black' : 'white',
                         border: 'none',
                         borderRadius: '4px',
-                        cursor: 'pointer',
+                        cursor: controlsDisabled ? 'not-allowed' : 'pointer',
+                        opacity: controlsDisabled ? 0.7 : 1,
                         fontWeight: 'bold',
                         fontSize: '14px'
                     }}
@@ -599,18 +500,44 @@ export default function PresentationViewer() {
                 </button>
 
                 <button
-                    onClick={() => {
-                        prevSlide();
-                        // Give focus to iframe so user can use arrow keys
-                        setTimeout(() => iframeRef.current?.focus(), 100);
-                    }}
+                    onClick={handlePlayClick}
+                    disabled={controlsDisabled}
                     style={{
                         padding: '8px 16px',
-                        backgroundColor: 'rgb(107, 114, 128)',
+                        backgroundColor: controlsDisabled ? 'rgb(107, 114, 128)' : 'rgba(197, 34, 37, 1)',
                         color: 'white',
                         border: 'none',
                         borderRadius: '4px',
-                        cursor: 'pointer',
+                        cursor: controlsDisabled ? 'not-allowed' : 'pointer',
+                        opacity: controlsDisabled ? 0.7 : 1,
+                        fontWeight: 'bold',
+                        fontSize: '14px'
+                    }}
+                >
+                    Replay
+                </button>
+
+                {isLoadingTTS && (
+                    <span style={{ color: 'rgb(34, 197, 94)', fontSize: '13px', fontWeight: 'bold' }}>
+                        Đang tạo TTS...
+                    </span>
+                )}
+
+
+                <button
+                    onClick={() => {
+                        if (!controlsDisabled) moveAndPlay(-1);
+                        setTimeout(() => iframeRef.current?.focus(), 100);
+                    }}
+                    disabled={controlsDisabled}
+                    style={{
+                        padding: '8px 16px',
+                        backgroundColor: controlsDisabled ? 'rgb(107, 114, 128)' : 'rgb(34, 197, 94)',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: controlsDisabled ? 'not-allowed' : 'pointer',
+                        opacity: controlsDisabled ? 0.7 : 1,
                         fontWeight: 'bold',
                         fontSize: '14px'
                     }}
@@ -620,17 +547,18 @@ export default function PresentationViewer() {
 
                 <button
                     onClick={() => {
-                        nextSlide();
-                        // Give focus to iframe so user can use arrow keys
+                        if (!controlsDisabled) moveAndPlay(1);
                         setTimeout(() => iframeRef.current?.focus(), 100);
                     }}
+                    disabled={controlsDisabled}
                     style={{
                         padding: '8px 16px',
-                        backgroundColor: 'rgb(107, 114, 128)',
+                        backgroundColor: controlsDisabled ? 'rgb(107, 114, 128)' : 'rgb(34, 197, 94)',
                         color: 'white',
                         border: 'none',
                         borderRadius: '4px',
-                        cursor: 'pointer',
+                        cursor: controlsDisabled ? 'not-allowed' : 'pointer',
+                        opacity: controlsDisabled ? 0.7 : 1,
                         fontWeight: 'bold',
                         fontSize: '14px'
                     }}
@@ -647,6 +575,7 @@ export default function PresentationViewer() {
                         onChange={(e) => {
                             const newSlide = parseInt(e.target.value) || 0;
                             setCurrentSlide(Math.max(0, newSlide));
+                            setCurrentLine(0);
                         }}
                         style={{
                             width: '60px',
@@ -698,14 +627,16 @@ export default function PresentationViewer() {
                     />
                     <button
                         onClick={saveManualNotes}
+                        disabled={controlsDisabled}
                         style={{
                             marginTop: '10px',
                             padding: '8px 16px',
-                            backgroundColor: 'rgb(34, 197, 94)',
-                            color: 'black',
+                            backgroundColor: controlsDisabled ? 'rgb(107, 114, 128)' : 'rgb(34, 197, 94)',
+                            color: controlsDisabled ? 'white' : 'black',
                             border: 'none',
                             borderRadius: '4px',
-                            cursor: 'pointer',
+                            cursor: controlsDisabled ? 'not-allowed' : 'pointer',
+                            opacity: controlsDisabled ? 0.7 : 1,
                             fontWeight: 'bold',
                             fontSize: '14px'
                         }}
